@@ -9,7 +9,7 @@ import time
 import random
 
 MAX_LENGTH=10
-
+batch_size = 20
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 torch.manual_seed(777)
@@ -26,15 +26,14 @@ class EncoderRNN(nn.Module):
         self.gru = nn.GRU(hidden_size, hidden_size)
 
     def forward(self, input, hidden):
-        #input = input.view(1, 1, -1)
-        input = input.view(1, 20, -1)
-        print(input.size())
+        input = input.view(1, batch_size, -1)
+        #print('hidden_size = ', hidden.size())
         output, hidden = self.gru(input, hidden)
         
         return output, hidden
 
     def initHidden(self):
-        return torch.zeros(1, 1, self.hidden_size, device=device)
+        return torch.zeros(1, batch_size, self.hidden_size, device=device)
 
 
 class DecoderRNN(nn.Module):
@@ -48,7 +47,6 @@ class DecoderRNN(nn.Module):
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, input, hidden):
-        #output = input.view(1, 1, -1)
         output = input.view(1, 20, -1)
         output = F.relu(output)
         output, hidden = self.gru(output, hidden)
@@ -97,14 +95,14 @@ class AttnDecoderRNN(nn.Module):
 
 
 def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH):
-    teacher_forcing_ratio = 0.5
+    teacher_forcing_ratio = 0.
     encoder_hidden = encoder.initHidden()
 
     encoder_optimizer.zero_grad()
     decoder_optimizer.zero_grad()
     
     input_length = input_tensor.size()[0]
-    target_length = target_tensor.size()[0]
+    target_length = target_tensor.size()[1]
     batch_size = input_tensor.size()[1]
 
     encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
@@ -116,13 +114,15 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
             input_tensor[ei], encoder_hidden)
         encoder_outputs[ei] = encoder_output[0, 0]
     
-    decoder_input = torch.zeros([10], device=device)
+    decoder_input = torch.zeros([1, 20, 10], device=device)
     decoder_hidden = encoder_hidden
 
     use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
+    
+    target_tensor = target_tensor.T
     target_tensor = F.one_hot(target_tensor, num_classes=10)
     target_tensor = target_tensor.type(torch.FloatTensor)
-
+    
     if use_teacher_forcing:
         # Teacher forcing 포함: 목표를 다음 입력으로 전달
         for di in range(target_length):
@@ -130,7 +130,8 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
             decoder_output, decoder_hidden = decoder(
                 decoder_input, decoder_hidden)
             
-            loss += criterion(decoder_output, target)
+            target_squeeze = target.squeeze()
+            loss += criterion(decoder_output, target_squeeze)
             decoder_input = target[:]
 
     else:
@@ -140,11 +141,11 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
             decoder_output, decoder_hidden = decoder(
                 decoder_input, decoder_hidden)
 
-            topv, topi = decoder_output.topk(1)
+            #topv, topi = decoder_output.topk(1)
             #decoder_input = topi.squeeze().detach()  # 입력으로 사용할 부분을 히스토리에서 분리
             decoder_input = decoder_output.detach()
-
-            loss += criterion(decoder_output, target)
+            target_squeeze = target.squeeze()
+            loss += criterion(decoder_output, target_squeeze)
     loss.backward()
 
     encoder_optimizer.step()
@@ -171,14 +172,11 @@ def trainIters(encoder, decoder, n_iters, dataloader, print_every=1000, plot_eve
         for enum, (data, label) in enumerate(dataloader):
             N, C, H , W = data.size()[0], data.size()[1], data.size()[2], data.size()[3]
             if count == 0:
-                #input_tensor = data.flatten().view(-1, 784)
                 input_tensor = data.view(1, N, H*W)
                 target_tensor = torch.unsqueeze(label, 1)
             else:
-                #data = data.flatten().view(-1, 784)
                 data = data.view(1, N, H*W)
                 label = torch.unsqueeze(label, 1)
-                #label = label.flatten()
                 input_tensor = torch.cat([input_tensor, data], dim=0)
                 target_tensor = torch.cat([target_tensor, label], dim=1)
             
@@ -189,7 +187,7 @@ def trainIters(encoder, decoder, n_iters, dataloader, print_every=1000, plot_eve
                 input_tensor = input_tensor.view([10, N, H*W])
                 loss = train_s2s(input_tensor, target_tensor, encoder,
                              decoder, encoder_optimizer, decoder_optimizer, criterion)
-                
+                print(loss) 
                 print_loss_total += loss
                 plot_loss_total += loss
 
@@ -216,8 +214,6 @@ def s2s_train(dataloader):
     decoder1 = DecoderRNN(input_size, output_size).to(device)
     attn_decoder1 = AttnDecoderRNN(input_size, output_size, dropout_p=0.1).to(device)
     
-    #print(encoder1)
-    #print(decoder1)
     trainIters(encoder1, decoder1, 75000, dataloader, print_every=5000)
     #trainIters(encoder1, attn_decoder1, 75000, print_every=5000)
 
@@ -285,7 +281,7 @@ def prepare_mnist(train, test):
 
 
 def main():
-    batch_size = 20
+    #batch_size = 20
     learning_rate = 0.001
     training_epochs = 15
 
