@@ -17,6 +17,7 @@ from torch import nn  # All neural network modules
 from torch.utils.data import DataLoader  # Gives easier dataset managment by creating mini batches etc.
 from tqdm import tqdm  # For a nice progress bar!
 
+import random
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -106,19 +107,50 @@ class GRU_ENC(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size * sequence_length, num_classes)
+        #self.fc = nn.Linear(hidden_size * sequence_length, num_classes)
 
-    def forward(self, x):
-        # Set initial hidden and cell states
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
-
+    def forward(self, x, h):
         # Forward propagate LSTM
-        out, _ = self.gru(x, h0)
-        out = out.reshape(out.shape[0], -1)
+        out, h_out = self.gru(x, h)
+        #out = out.reshape(out.shape[0], -1)
 
         # Decode the hidden state of the last time step
-        out = self.fc(out)
-        return out
+        #out = self.fc(out)
+        return out, h_out
+
+    def init_hidden(self):
+        return torch.zeros(self.num_layers, batch_size, self.hidden_size).to(device)
+
+
+class GRU_DEC(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes):
+        super(GRU_DEC, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        #self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
+        self.emb = nn.Embedding(num_classes, hidden_size)
+        self.gru = nn.GRU(hidden_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size * num_classes, num_classes)
+        self.softmax = nn.Softmax(dim=1)
+        
+        print(self.gru)
+
+    def forward(self, x, h):
+        # Forward propagate LSTM
+        input = self.emb(x).view(batch_size, num_classes, -1)
+        #print('dec input size = ', input.size())
+        out, h_out = self.gru(input, h)
+        #out = out.reshape(out.shape[0], -1)
+        #print('dec out shape = ', out.size())
+        #print('dec hid shape = ', h_out.size())
+
+        # Decode the hidden state of the last time step
+        out = self.softmax(self.fc(out.reshape(out.shape[0], -1)))
+        return out, h_out
+
+    def init_hidden(self):
+        return torch.zeros(self.num_layers, batch_size, self.hidden_size).to(device)
+
 
 # Load Data
 train_dataset = datasets.MNIST(root="MNIST_data/", train=True, transform=transforms.ToTensor(), download=True)
@@ -127,13 +159,17 @@ train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=
 test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=True)
 
 # Initialize network (try out just using simple RNN, or GRU, and then compare with LSTM)
-model = RNN_GRU(input_size, hidden_size, num_layers, num_classes).to(device)
+#model = RNN_GRU(input_size, hidden_size, num_layers, num_classes).to(device)
+enc = GRU_ENC(input_size, hidden_size, num_layers, num_classes).to(device)
+dec = GRU_DEC(input_size, hidden_size, num_layers, num_classes).to(device)
 
 # Loss and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+optimizer_enc = optim.Adam(enc.parameters(), lr=learning_rate)
+optimizer_dec = optim.Adam(enc.parameters(), lr=learning_rate)
 
 # Train Network
+'''
 for epoch in range(num_epochs):
     for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
         # Get data to cuda if possible
@@ -150,6 +186,70 @@ for epoch in range(num_epochs):
 
         # gradient descent update step/adam step
         optimizer.step()
+'''
+for epoch in range(num_epochs):
+    seq_data = None
+    seq_targets = None
+    for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
+        # Get data to cuda if possible
+        forcing_prob = 1.
+
+        data = data.to(device=device).squeeze(1)
+        data = data.unsqueeze(0)
+        targets = targets.to(device=device).unsqueeze(0)
+        
+        if (batch_idx) % 10 == 0:
+            seq_data = data
+            seq_targets = targets
+        elif (batch_idx) % 10 == 9: 
+            # forward
+            loss = 0
+            optimizer_enc.zero_grad()
+            optimizer_dec.zero_grad()
+
+            seq_data = torch.cat([seq_data, data], dim=0)
+            seq_targets = torch.cat([seq_targets, targets], dim=0)
+            #print('seq data size = ', seq_data.size())
+            
+            enc_h = enc.init_hidden()
+
+            for i in range(10):
+                #scores = model(seq_data[i])
+                #loss += criterion(scores, targets)
+                enc_out, enc_h = enc(seq_data[i], enc_h)
+            
+            use_forcing = True if random.random() < forcing_prob else False
+
+            dec_h = enc_h
+            dec_input = torch.zeros([batch_size, num_classes], device=device)
+            dec_input = dec_input.type(torch.LongTensor)
+
+            if use_forcing:
+                for i in range(10):
+                    targets = F.one_hot(seq_targets[i], num_classes=10)
+                    dec_out, dec_h = dec(dec_input, dec_h)
+                    dec_input = targets
+                    loss += criterion(dec_out, targets.type(torch.cuda.FloatTensor))
+            else:
+                for i in range(10):
+                    targets = F.one_hot(seq_targets[i], num_classes=10)
+                    dec_out, dec_h = dec(dec_input, dec_h)
+                    #dec_out = dec_out.detach()
+                    loss += criterion(dec_out, targets.type(torch.FloatTensor))
+            loss.backward()
+            optimizer_enc.step()
+            optimizer_dec.step()
+                #print(dec_input.size())
+            # backward
+            #optimizer.zero_grad()
+            #loss.backward()
+
+            # gradient descent update step/adam step
+            #optimizer.step()
+        else:
+            seq_data = torch.cat([seq_data, data], dim=0)
+            seq_targets = torch.cat([seq_targets, targets], dim=0)
+            
 
 # Check accuracy on training & test to see how good our model
 def check_accuracy(loader, model):
