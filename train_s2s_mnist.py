@@ -9,7 +9,7 @@ import time
 import random
 
 MAX_LENGTH=10
-batch_size = 20
+batch_size = 100
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 torch.manual_seed(777)
@@ -47,8 +47,8 @@ class DecoderRNN(nn.Module):
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, input, hidden):
-        output = input.view(1, 20, -1)
-        output = F.relu(output)
+        output = input.view(1, batch_size, -1)
+        #output = F.relu(output)
         output, hidden = self.gru(output, hidden)
         output = self.softmax(self.out(output[0]))
         return output, hidden
@@ -95,7 +95,7 @@ class AttnDecoderRNN(nn.Module):
 
 
 def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH):
-    teacher_forcing_ratio = 0.
+    teacher_forcing_ratio = 0.5
     encoder_hidden = encoder.initHidden()
 
     encoder_optimizer.zero_grad()
@@ -114,7 +114,7 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
             input_tensor[ei], encoder_hidden)
         encoder_outputs[ei] = encoder_output[0, 0]
     
-    decoder_input = torch.zeros([1, 20, 10], device=device)
+    decoder_input = torch.zeros([1, batch_size, 10], device=device)
     decoder_hidden = encoder_hidden
 
     use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
@@ -141,7 +141,8 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
             decoder_output, decoder_hidden = decoder(
                 decoder_input, decoder_hidden)
 
-            #topv, topi = decoder_output.topk(1)
+            topv, topi = decoder_output.topk(1)
+            print(decoder_output)
             #decoder_input = topi.squeeze().detach()  # 입력으로 사용할 부분을 히스토리에서 분리
             decoder_input = decoder_output.detach()
             target_squeeze = target.squeeze()
@@ -154,7 +155,7 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
     return loss.item() / target_length
 
 
-def trainIters(encoder, decoder, n_iters, dataloader, print_every=1000, plot_every=100, learning_rate=0.01):
+def trainIters(encoder, decoder, n_iters, dataloader, print_every=1000, plot_every=100, learning_rate=0.1):
     start = time.time()
     plot_losses = []
     print_loss_total = 0  # print_every 마다 초기화
@@ -187,7 +188,7 @@ def trainIters(encoder, decoder, n_iters, dataloader, print_every=1000, plot_eve
                 input_tensor = input_tensor.view([10, N, H*W])
                 loss = train_s2s(input_tensor, target_tensor, encoder,
                              decoder, encoder_optimizer, decoder_optimizer, criterion)
-                print(loss) 
+
                 print_loss_total += loss
                 plot_loss_total += loss
 
@@ -297,7 +298,7 @@ def main():
 
     train_loader = torch.utils.data.DataLoader(dataset=mnist_train,
                                               batch_size=batch_size,
-                                              shuffle=False,
+                                              shuffle=True,
                                               drop_last=True)
 
     test_loader = torch.utils.data.DataLoader(dataset=mnist_train,
