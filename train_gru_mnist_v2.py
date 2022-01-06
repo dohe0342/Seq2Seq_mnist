@@ -27,9 +27,9 @@ hidden_size = 256
 num_layers = 2
 num_classes = 10
 sequence_length = 28
-learning_rate = 0.005
+learning_rate = 0.000001
 batch_size = 64
-num_epochs = 3
+num_epochs = 20000
 
 # Recurrent neural network (many-to-one)
 class RNN(nn.Module):
@@ -107,15 +107,10 @@ class GRU_ENC(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
-        #self.fc = nn.Linear(hidden_size * sequence_length, num_classes)
 
     def forward(self, x, h):
-        # Forward propagate LSTM
         out, h_out = self.gru(x, h)
-        #out = out.reshape(out.shape[0], -1)
 
-        # Decode the hidden state of the last time step
-        #out = self.fc(out)
         return out, h_out
 
     def init_hidden(self):
@@ -127,22 +122,17 @@ class GRU_DEC(nn.Module):
         super(GRU_DEC, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        #self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
         self.emb = nn.Embedding(num_classes, hidden_size)
         self.gru = nn.GRU(hidden_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size * num_classes, num_classes)
-        self.softmax = nn.Softmax(dim=1)
+        self.fc = nn.Linear(hidden_size, num_classes)
+        #self.softmax = nn.Softmax(dim=1)
+        self.softmax = nn.LogSoftmax(dim=1)
         
         print(self.gru)
 
     def forward(self, x, h):
-        # Forward propagate LSTM
-        input = self.emb(x).view(batch_size, num_classes, -1)
-        #print('dec input size = ', input.size())
+        input = self.emb(x).view(batch_size, 1, -1)
         out, h_out = self.gru(input, h)
-        #out = out.reshape(out.shape[0], -1)
-        #print('dec out shape = ', out.size())
-        #print('dec hid shape = ', h_out.size())
 
         # Decode the hidden state of the last time step
         out = self.softmax(self.fc(out.reshape(out.shape[0], -1)))
@@ -155,8 +145,8 @@ class GRU_DEC(nn.Module):
 # Load Data
 train_dataset = datasets.MNIST(root="MNIST_data/", train=True, transform=transforms.ToTensor(), download=True)
 test_dataset = datasets.MNIST(root="MNIST_data/", train=False, transform=transforms.ToTensor(), download=True)
-train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=True)
+train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
 # Initialize network (try out just using simple RNN, or GRU, and then compare with LSTM)
 #model = RNN_GRU(input_size, hidden_size, num_layers, num_classes).to(device)
@@ -164,7 +154,8 @@ enc = GRU_ENC(input_size, hidden_size, num_layers, num_classes).to(device)
 dec = GRU_DEC(input_size, hidden_size, num_layers, num_classes).to(device)
 
 # Loss and optimizer
-criterion = nn.CrossEntropyLoss()
+#criterion = nn.CrossEntropyLoss()
+criterion = nn.NLLLoss()
 optimizer_enc = optim.Adam(enc.parameters(), lr=learning_rate)
 optimizer_dec = optim.Adam(enc.parameters(), lr=learning_rate)
 
@@ -190,9 +181,10 @@ for epoch in range(num_epochs):
 for epoch in range(num_epochs):
     seq_data = None
     seq_targets = None
-    for batch_idx, (data, targets) in enumerate(tqdm(train_loader)):
+    loss = None
+    for batch_idx, (data, targets) in enumerate(tqdm(train_loader, leave=False)):
         # Get data to cuda if possible
-        forcing_prob = 1.
+        forcing_prob = 0.5
 
         data = data.to(device=device).squeeze(1)
         data = data.unsqueeze(0)
@@ -212,44 +204,37 @@ for epoch in range(num_epochs):
             #print('seq data size = ', seq_data.size())
             
             enc_h = enc.init_hidden()
-
+            
             for i in range(10):
-                #scores = model(seq_data[i])
-                #loss += criterion(scores, targets)
                 enc_out, enc_h = enc(seq_data[i], enc_h)
+                print(enc_out.size())
+                print(enc_h.size())
             
             use_forcing = True if random.random() < forcing_prob else False
 
             dec_h = enc_h
-            dec_input = torch.zeros([batch_size, num_classes], device=device)
-            dec_input = dec_input.type(torch.LongTensor)
+            dec_input = torch.zeros([batch_size], device=device)
+            dec_input = dec_input.type(torch.cuda.LongTensor)
 
             if use_forcing:
                 for i in range(10):
-                    targets = F.one_hot(seq_targets[i], num_classes=10)
                     dec_out, dec_h = dec(dec_input, dec_h)
-                    dec_input = targets
-                    loss += criterion(dec_out, targets.type(torch.cuda.FloatTensor))
+                    dec_input = seq_targets[i]
+                    loss += criterion(dec_out, seq_targets[i])
             else:
                 for i in range(10):
-                    targets = F.one_hot(seq_targets[i], num_classes=10)
                     dec_out, dec_h = dec(dec_input, dec_h)
-                    #dec_out = dec_out.detach()
-                    loss += criterion(dec_out, targets.type(torch.FloatTensor))
+                    loss += criterion(dec_out, seq_targets[i])
+                    topv, topi = dec_out.topk(1)
+                    dec_input = topi.squeeze().detach()
             loss.backward()
             optimizer_enc.step()
             optimizer_dec.step()
-                #print(dec_input.size())
-            # backward
-            #optimizer.zero_grad()
-            #loss.backward()
-
-            # gradient descent update step/adam step
-            #optimizer.step()
+        
         else:
             seq_data = torch.cat([seq_data, data], dim=0)
             seq_targets = torch.cat([seq_targets, targets], dim=0)
-            
+    print(loss)
 
 # Check accuracy on training & test to see how good our model
 def check_accuracy(loader, model):
