@@ -108,21 +108,20 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
     encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
 
     loss = 0
-
+    input_tensor = input_tensor.to(device)
     for ei in range(input_length):
         encoder_output, encoder_hidden = encoder(
             input_tensor[ei], encoder_hidden)
         encoder_outputs[ei] = encoder_output[0, 0]
     
     decoder_input = torch.zeros([1, batch_size, 10], device=device)
-    decoder_hidden = encoder_hidden
+    decoder_hidden = encoder_hidden.to(device)
 
     use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
     
     target_tensor = target_tensor.T
-    target_tensor = F.one_hot(target_tensor, num_classes=10)
-    target_tensor = target_tensor.type(torch.FloatTensor)
-    
+    #target_tensor = F.one_hot(target_tensor, num_classes=10)
+    #target_tensor = target_tensor.type(torch.FloatTensor)
     if use_teacher_forcing:
         # Teacher forcing 포함: 목표를 다음 입력으로 전달
         for di in range(target_length):
@@ -130,9 +129,9 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
             decoder_output, decoder_hidden = decoder(
                 decoder_input, decoder_hidden)
             
-            target_squeeze = target.squeeze()
-            loss += criterion(decoder_output, target_squeeze)
-            decoder_input = target[:]
+            #target_squeeze = target.squeeze()
+            loss += criterion(decoder_output, target)
+            decoder_input = F.one_hot(target, num_classes=num_classes)
 
     else:
         # Teacher forcing 미포함: 자신의 예측을 다음 입력으로 사용
@@ -142,11 +141,10 @@ def train_s2s(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, 
                 decoder_input, decoder_hidden)
 
             topv, topi = decoder_output.topk(1)
-            print(decoder_output)
             #decoder_input = topi.squeeze().detach()  # 입력으로 사용할 부분을 히스토리에서 분리
             decoder_input = decoder_output.detach()
             target_squeeze = target.squeeze()
-            loss += criterion(decoder_output, target_squeeze)
+            loss += criterion(decoder_output, target_tensor[di])
     loss.backward()
 
     encoder_optimizer.step()
