@@ -1,3 +1,12 @@
+"""
+Example code of a simple RNN, GRU, LSTM on the MNIST dataset.
+
+Programmed by Aladdin Persson <aladdin.persson at hotmail dot com>
+*    2020-05-09 Initial coding
+
+"""
+
+# Imports
 import torch
 import torchvision  # torch package for vision related things
 import torch.nn.functional as F  # Parameterless functions, like (some) activation functions
@@ -15,12 +24,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Hyperparameters
 input_size = 28
 hidden_size = 256
-num_layers = 4
+num_layers = 2
 num_classes = 10
 sequence_length = 28
 learning_rate = 0.0005
 batch_size = 64
-num_epochs = 6000
+num_epochs = 20000
+seq_length = 1
 
 # Recurrent neural network (many-to-one)
 class RNN(nn.Module):
@@ -113,12 +123,13 @@ class GRU_DEC(nn.Module):
         super(GRU_DEC, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        #self.emb = nn.Embedding(num_classes, hidden_size)
-        self.emb = nn.Linear(num_classes, hidden_size)
+        self.emb = nn.Embedding(num_classes, hidden_size)
         self.gru = nn.GRU(hidden_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, num_classes)
         #self.softmax = nn.Softmax(dim=1)
         self.softmax = nn.LogSoftmax(dim=1)
+        
+        print(self.gru)
 
     def forward(self, x, h):
         input = self.emb(x).view(batch_size, 1, -1)
@@ -176,24 +187,21 @@ for epoch in range(num_epochs):
     for batch_idx, (data, targets) in enumerate(tqdm(train_loader, leave=False)):
         # Get data to cuda if possible
         forcing_prob = 0.5
-        seq_length = 2
-        #seq_length = 5
 
         data = data.to(device=device).squeeze(1)
         data = data.unsqueeze(0)
         targets = targets.to(device=device).unsqueeze(0)
-        
         if (batch_idx) % seq_length == 0:
             seq_data = data
             seq_targets = targets
-        elif (batch_idx) % seq_length == seq_length-1: 
-            # forward
+            
             loss = 0
             optimizer_enc.zero_grad()
             optimizer_dec.zero_grad()
 
-            seq_data = torch.cat([seq_data, data], dim=0)
-            seq_targets = torch.cat([seq_targets, targets], dim=0)
+            #seq_data = torch.cat([seq_data, data], dim=0)
+            #seq_targets = torch.cat([seq_targets, targets], dim=0)
+            #print('seq data size = ', seq_data.size())
             
             enc_h = enc.init_hidden()
             
@@ -203,37 +211,31 @@ for epoch in range(num_epochs):
             use_forcing = True if random.random() < forcing_prob else False
 
             dec_h = enc_h
-            dec_input = torch.zeros([batch_size, num_classes], device=device)
-            dec_input = dec_input.type(torch.cuda.FloatTensor)
-            #dec_input = torch.LongTensor([11]*batch_size).to(device)
-            #print(dec_input.size())
+            dec_input = torch.zeros([batch_size], device=device)
+            dec_input = dec_input.type(torch.cuda.LongTensor)
 
             if use_forcing:
                 for i in range(seq_length):
                     dec_out, dec_h = dec(dec_input, dec_h)
-                    dec_input = F.one_hot(seq_targets[i], num_classes=num_classes).type(torch.cuda.FloatTensor)
+                    dec_input = seq_targets[i]
                     loss += criterion(dec_out, seq_targets[i])
             else:
                 for i in range(seq_length):
                     dec_out, dec_h = dec(dec_input, dec_h)
                     loss += criterion(dec_out, seq_targets[i])
-                    #topv, topi = dec_out.topk(1)
-                    #dec_input = topi.squeeze().detach()
-                    dec_input = dec_out.detach()
-
+                    topv, topi = dec_out.topk(1)
+                    dec_input = topi.squeeze().detach()
             _, top1 = dec_out.max(1)
             acc += (top1 == targets).sum()
             loss.backward()
             optimizer_enc.step()
             optimizer_dec.step()
-
-            seq_length = random.randint(2, 10)
         
         else:
             seq_data = torch.cat([seq_data, data], dim=0)
             seq_targets = torch.cat([seq_targets, targets], dim=0)
-    #print(loss)
-    print(f'acc = {acc.item()/60000.} %')
+    print(loss)
+    print('acc = ', acc)
 
 # Check accuracy on training & test to see how good our model
 def check_accuracy(loader, model):
